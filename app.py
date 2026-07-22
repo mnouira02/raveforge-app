@@ -146,7 +146,9 @@ def _render_report(report: DiagnosticReport) -> None:
     if report.recommendation:
         st.info(report.recommendation)
 
-    retry_label = "✅ Safe to retry" if report.safe_to_retry else "❌ Do not retry automatically"
+    retry_label = (
+        "✅ Safe to retry" if report.safe_to_retry else "❌ Do not retry automatically"
+    )
     st.caption(retry_label)
 
 
@@ -162,7 +164,15 @@ with st.sidebar:
     base_url = st.text_input(
         "Base URL",
         placeholder="https://innovate.mdsol.com",
-        help="RWS environment base URL, no trailing slash.",
+        help=(
+            "Domain only — no path, no trailing slash. "
+            "The /RaveWebServices path is appended automatically. "
+            "Examples: https://innovate.mdsol.com · https://yourtrial.mdsol.com"
+        ),
+    )
+    st.caption(
+        "💡 Domain only, e.g. `https://innovate.mdsol.com` — "
+        "do **not** include `/RaveWebServices` or `/MedidataRave`."
     )
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
@@ -182,7 +192,11 @@ with st.sidebar:
                     st.session_state.client = client
                     st.success("Connected ✓")
                 else:
-                    st.error("RWS is not reachable at that URL.")
+                    st.error(
+                        "RWS did not respond. "
+                        "Check the domain — it should be the bare host, "
+                        "e.g. https://innovate.mdsol.com"
+                    )
             except Exception as exc:
                 st.error(f"Connection failed: {exc}")
 
@@ -227,7 +241,6 @@ with tab_builder:
         st.markdown("---")
         st.subheader("Subjects")
 
-        # --- add subject button
         if st.button("＋ Add Subject"):
             st.session_state.subjects.append({
                 "key": "",
@@ -464,7 +477,10 @@ with tab_validate:
                 blocking = [
                     i for i in issues
                     if str(i.severity) in ("Severity.ERROR", "ERROR")
-                    or (strict and str(i.severity) in ("Severity.WARNING", "WARNING"))
+                    or (
+                        strict
+                        and str(i.severity) in ("Severity.WARNING", "WARNING")
+                    )
                 ]
 
                 if not issues:
