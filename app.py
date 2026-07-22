@@ -79,6 +79,20 @@ def _setup_logging() -> None:
     st.session_state["_logging_configured"] = True
 
 
+def _normalize_base_url(raw: str) -> str:
+    """Ensure the URL has an https:// scheme and no trailing slash.
+
+    Handles the common case where a user pastes just the domain
+    (e.g. ``innovate.mdsol.com``) without a scheme.
+    ``http://`` URLs are left as-is so developers testing against a
+    local HTTP proxy are not broken silently.
+    """
+    url = raw.strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 # ---------------------------------------------------------------------------
 # Session state initialisation
 # ---------------------------------------------------------------------------
@@ -224,7 +238,7 @@ with st.sidebar:
     st.subheader("RWS Credentials")
     st.caption(
         "Enter the domain only — no path. "
-        "Credentials are validated on the first RWS call."
+        "``https://`` is added automatically if omitted."
     )
 
     base_url = st.text_input(
@@ -234,8 +248,8 @@ with st.sidebar:
             if st.session_state.client is not None
             else ""
         ),
-        placeholder="https://innovate.mdsol.com",
-        help="Domain only, e.g. https://innovate.mdsol.com",
+        placeholder="innovate.mdsol.com",
+        help="Domain only — https:// is added automatically if you leave it out.",
     )
     username = st.text_input(
         "Username",
@@ -251,12 +265,19 @@ with st.sidebar:
         if not base_url or not username or not password:
             st.error("All three fields are required.")
         else:
+            normalized_url = _normalize_base_url(base_url)
             st.session_state.client = RWSClient(
-                base_url=base_url.rstrip("/"),
+                base_url=normalized_url,
                 username=username,
                 password=password,
             )
-            st.success("✅ Credentials saved — ready to call RWS.")
+            # Show the user what was actually stored so they can verify
+            if normalized_url != base_url.strip().rstrip("/"):
+                st.success(
+                    f"✅ Credentials saved — URL normalised to `{normalized_url}`"
+                )
+            else:
+                st.success("✅ Credentials saved — ready to call RWS.")
 
     if st.session_state.client is not None:
         st.info(
