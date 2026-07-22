@@ -108,7 +108,9 @@ def _build_transaction(study_oid: str, subjects: list[dict]) -> RaveTransaction:
                     tx.item_group(
                         group["oid"],
                         repeat_key=group.get("repeat_key") or None,
-                        specified_items_only=group.get("specified_items_only", False),
+                        specified_items_only=group.get(
+                            "specified_items_only", False
+                        ),
                         action=actions.get(group.get("action", "(none)")),
                     )
                     for item in group.get("items", []):
@@ -152,58 +154,66 @@ def _render_report(report: DiagnosticReport) -> None:
     st.caption(retry_label)
 
 
+def _get_or_build_client() -> RWSClient | None:
+    """Return the RWSClient from session state, or None if not configured."""
+    return st.session_state.client
+
+
 # ---------------------------------------------------------------------------
-# Sidebar — connection
+# Sidebar — credentials (no ping, saved immediately on Save)
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
     st.title("⚗️ RaveForge")
     st.markdown("---")
-    st.subheader("RWS Connection")
+    st.subheader("RWS Credentials")
+    st.caption(
+        "Enter the domain only — no path. "
+        "Credentials are validated on the first RWS call."
+    )
 
     base_url = st.text_input(
         "Base URL",
+        value=(
+            st.session_state.client.base_url
+            if st.session_state.client is not None
+            else ""
+        ),
         placeholder="https://innovate.mdsol.com",
-        help=(
-            "Domain only — no path, no trailing slash. "
-            "The /RaveWebServices path is appended automatically. "
-            "Examples: https://innovate.mdsol.com · https://yourtrial.mdsol.com"
+        help="Domain only, e.g. https://innovate.mdsol.com",
+    )
+    username = st.text_input(
+        "Username",
+        value=(
+            st.session_state.client.auth.username
+            if st.session_state.client is not None
+            else ""
         ),
     )
-    st.caption(
-        "💡 Domain only, e.g. `https://innovate.mdsol.com` — "
-        "do **not** include `/RaveWebServices` or `/MedidataRave`."
-    )
-    username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
-    if st.button("Connect", use_container_width=True):
+    if st.button("Save Credentials", use_container_width=True, type="primary"):
         if not base_url or not username or not password:
-            st.error("All three connection fields are required.")
+            st.error("All three fields are required.")
         else:
-            try:
-                client = RWSClient(
-                    base_url=base_url.rstrip("/"),
-                    username=username,
-                    password=password,
-                )
-                reachable = client.ping()
-                if reachable:
-                    st.session_state.client = client
-                    st.success("Connected ✓")
-                else:
-                    st.error(
-                        "RWS did not respond. "
-                        "Check the domain — it should be the bare host, "
-                        "e.g. https://innovate.mdsol.com"
-                    )
-            except Exception as exc:
-                st.error(f"Connection failed: {exc}")
+            st.session_state.client = RWSClient(
+                base_url=base_url.rstrip("/"),
+                username=username,
+                password=password,
+            )
+            st.success("✅ Credentials saved — ready to call RWS.")
 
     if st.session_state.client is not None:
-        st.success("🟢 Connected")
+        st.info(
+            f"🟢 **{st.session_state.client.auth.username}** → "
+            f"`{st.session_state.client.base_url}`"
+        )
     else:
-        st.warning("🔴 Not connected")
+        st.warning("🔴 No credentials saved yet.")
+
+    if st.button("Clear Credentials", use_container_width=True, type="secondary"):
+        st.session_state.client = None
+        st.rerun()
 
     st.markdown("---")
     st.caption("Powered by [RaveForge](https://github.com/mnouira02/raveforge)")
@@ -429,7 +439,6 @@ with tab_builder:
             st.session_state.tx = None
             st.rerun()
 
-    # --- Live XML preview
     with col_preview:
         st.subheader("Live XML Preview")
         if study_oid and st.session_state.subjects:
@@ -471,7 +480,7 @@ with tab_validate:
                 tx_v = _build_transaction(
                     study_oid_v, st.session_state.subjects
                 )
-                issues = validate(tx_v, strict=False)  # collect all, display ourselves
+                issues = validate(tx_v, strict=False)
                 st.session_state.validation_issues = issues
 
                 blocking = [
@@ -538,8 +547,9 @@ with tab_submit:
         "On failure, the diagnostic layer analyses the error automatically."
     )
 
-    if st.session_state.client is None:
-        st.warning("Connect to RWS first using the sidebar.")
+    client = _get_or_build_client()
+    if client is None:
+        st.warning("Save your RWS credentials in the sidebar first.")
     else:
         study_oid_sub = st.session_state.get("study_oid", "")
         if not study_oid_sub or not st.session_state.subjects:
@@ -560,8 +570,11 @@ with tab_submit:
                 if st.button("🚀 Submit", type="primary"):
                     try:
                         validate(tx_sub, strict=True)
-                        response = st.session_state.client.post_odm(tx_sub.build())
-                        st.success(f"✅ Submission accepted by RWS.\n\n{response}")
+                        response = client.post_odm(tx_sub.build())
+                        st.success(
+                            "✅ Submission accepted by RWS.\n\n"
+                            + response
+                        )
                         st.session_state.last_report = None
                     except ValidationError as ve:
                         st.error("Transaction failed pre-submit validation:")
@@ -569,7 +582,7 @@ with tab_submit:
                     except RWSError as rws_err:
                         st.error(f"RWS rejected the submission: {rws_err}")
                         try:
-                            diag = RaveDiagnostics(st.session_state.client)
+                            diag = RaveDiagnostics(client)
                             report = diag.explain_submission_failure(
                                 rws_err, transaction=tx_sub
                             )
@@ -592,14 +605,15 @@ with tab_submit:
 with tab_browser:
     st.header("Study Browser")
     st.caption(
-        "Browse studies and sites accessible to the connected user. "
+        "Browse studies and sites accessible to the configured user. "
         "Read-only — nothing is modified."
     )
 
-    if st.session_state.client is None:
-        st.warning("Connect to RWS first using the sidebar.")
+    client = _get_or_build_client()
+    if client is None:
+        st.warning("Save your RWS credentials in the sidebar first.")
     else:
-        diag_browser = RaveDiagnostics(st.session_state.client)
+        diag_browser = RaveDiagnostics(client)
 
         if st.button("Load Studies", type="primary"):
             try:
@@ -609,6 +623,8 @@ with tab_browser:
                 else:
                     st.success(f"{len(studies)} study/studies found.")
                     st.session_state["browser_studies"] = studies
+            except RWSError as rws_err:
+                st.error(f"RWS error: {rws_err}")
             except Exception as exc:
                 st.error(f"Failed to load studies: {exc}")
 
@@ -636,5 +652,7 @@ with tab_browser:
                             [{"SiteOID": s} for s in site_oids],
                             use_container_width=True,
                         )
+                except RWSError as rws_err:
+                    st.error(f"RWS error: {rws_err}")
                 except Exception as exc:
                     st.error(f"Failed to load sites: {exc}")
