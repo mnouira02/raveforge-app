@@ -1,6 +1,10 @@
 """RaveForge App — Streamlit workbench for Medidata Rave ODM submissions."""
 from __future__ import annotations
 
+import logging
+import sys
+from datetime import datetime
+
 import streamlit as st
 
 from raveforge import (
@@ -28,6 +32,54 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Logging — terminal + in-app log buffer
+# ---------------------------------------------------------------------------
+
+class _StreamlitLogHandler(logging.Handler):
+    """Captures log records into session-state so the UI can display them."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if "rws_log" not in st.session_state:
+                st.session_state.rws_log = []
+            ts = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+            level = record.levelname
+            st.session_state.rws_log.append(
+                f"[{ts}] [{level}] {record.getMessage()}"
+            )
+            # Keep last 200 lines only
+            if len(st.session_state.rws_log) > 200:
+                st.session_state.rws_log = st.session_state.rws_log[-200:]
+        except Exception:
+            pass
+
+
+def _setup_logging() -> None:
+    """Wire raveforge DEBUG logs → terminal stdout AND the in-app buffer.
+    Called once; subsequent calls are no-ops thanks to the flag check."""
+    if st.session_state.get("_logging_configured"):
+        return
+
+    root = logging.getLogger("raveforge")
+    root.setLevel(logging.DEBUG)
+
+    # Terminal handler — shows up in the PowerShell / terminal window
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setLevel(logging.DEBUG)
+        sh.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+        )
+        root.addHandler(sh)
+
+    # In-app buffer handler
+    if not any(isinstance(h, _StreamlitLogHandler) for h in root.handlers):
+        root.addHandler(_StreamlitLogHandler())
+
+    st.session_state["_logging_configured"] = True
+
+
+# ---------------------------------------------------------------------------
 # Session state initialisation
 # ---------------------------------------------------------------------------
 
@@ -41,7 +93,10 @@ if "last_report" not in st.session_state:
     st.session_state.last_report = None
 if "subjects" not in st.session_state:
     st.session_state.subjects: list[dict] = []
+if "rws_log" not in st.session_state:
+    st.session_state.rws_log: list[str] = []
 
+_setup_logging()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -160,7 +215,7 @@ def _get_or_build_client() -> RWSClient | None:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar — credentials (no ping, saved immediately on Save)
+# Sidebar — credentials + RWS log panel
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
@@ -214,6 +269,25 @@ with st.sidebar:
     if st.button("Clear Credentials", use_container_width=True, type="secondary"):
         st.session_state.client = None
         st.rerun()
+
+    # -----------------------------------------------------------------------
+    # RWS Debug Log Panel
+    # -----------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🪵 RWS Debug Log")
+
+    col_clear, col_copy = st.columns([1, 1])
+    with col_clear:
+        if st.button("Clear log", use_container_width=True):
+            st.session_state.rws_log = []
+            st.rerun()
+
+    log_lines = st.session_state.rws_log
+    if log_lines:
+        log_text = "\n".join(reversed(log_lines))  # newest first
+        st.code(log_text, language=None)
+    else:
+        st.caption("No RWS calls logged yet.")
 
     st.markdown("---")
     st.caption("Powered by [RaveForge](https://github.com/mnouira02/raveforge)")
