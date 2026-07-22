@@ -109,6 +109,12 @@ if "subjects" not in st.session_state:
     st.session_state.subjects: list[dict] = []
 if "rws_log" not in st.session_state:
     st.session_state.rws_log: list[str] = []
+if "browser_studies" not in st.session_state:
+    st.session_state.browser_studies = []
+if "browser_sites" not in st.session_state:
+    st.session_state.browser_sites = []
+if "browser_subjects" not in st.session_state:
+    st.session_state.browser_subjects = []
 
 _setup_logging()
 
@@ -700,7 +706,7 @@ with tab_submit:
 with tab_browser:
     st.header("Study Browser")
     st.caption(
-        "Browse studies and sites accessible to the configured user. "
+        "Browse studies, sites, and subjects accessible to the configured user. "
         "Read-only — nothing is modified."
     )
 
@@ -710,44 +716,159 @@ with tab_browser:
     else:
         diag_browser = RaveDiagnostics(client)
 
+        # -------------------------------------------------------------------
+        # Studies
+        # -------------------------------------------------------------------
         if st.button("Load Studies", type="primary"):
             try:
                 studies = diag_browser.get_studies()
                 if not studies:
                     st.info("No studies found for this user.")
                 else:
+                    st.session_state.browser_studies = studies
+                    # Reset downstream selections when studies reload
+                    st.session_state.browser_sites = []
+                    st.session_state.browser_subjects = []
                     st.success(f"{len(studies)} study/studies found.")
-                    st.session_state["browser_studies"] = studies
             except RWSError as rws_err:
                 st.error(f"RWS error: {rws_err}")
             except Exception as exc:
                 st.error(f"Failed to load studies: {exc}")
 
-        if st.session_state.get("browser_studies"):
-            studies_data = st.session_state["browser_studies"]
+        if st.session_state.browser_studies:
+            studies_data = st.session_state.browser_studies
             st.dataframe(
                 [{"OID": s["oid"], "Name": s["name"]} for s in studies_data],
                 use_container_width=True,
             )
 
-            selected_oid = st.selectbox(
+            selected_study_oid = st.selectbox(
                 "Select a study to browse its sites",
                 options=[s["oid"] for s in studies_data],
                 key="browser_selected_study",
             )
 
+            # -------------------------------------------------------------------
+            # Sites
+            # -------------------------------------------------------------------
             if st.button("Load Sites"):
                 try:
-                    site_oids = diag_browser.get_sites(selected_oid)
-                    if not site_oids:
+                    sites = diag_browser.get_sites(selected_study_oid)
+                    if not sites:
                         st.info("No sites found for this study.")
                     else:
-                        st.success(f"{len(site_oids)} site(s) found.")
-                        st.dataframe(
-                            [{"SiteOID": s} for s in site_oids],
-                            use_container_width=True,
-                        )
+                        st.session_state.browser_sites = sites
+                        st.session_state.browser_subjects = []
+                        st.success(f"{len(sites)} site(s) found.")
                 except RWSError as rws_err:
                     st.error(f"RWS error: {rws_err}")
                 except Exception as exc:
                     st.error(f"Failed to load sites: {exc}")
+
+            if st.session_state.browser_sites:
+                sites_data = st.session_state.browser_sites
+                st.dataframe(
+                    [{"OID": s["oid"], "Name": s["name"]} for s in sites_data],
+                    use_container_width=True,
+                )
+
+                st.markdown("---")
+                # -------------------------------------------------------------------
+                # Subject Search
+                # -------------------------------------------------------------------
+                st.subheader("🔎 Subject Search")
+                st.caption(
+                    "Search for subjects in the selected study. "
+                    "Optionally filter by site. "
+                    "Click **Use** to pre-fill the Builder with a subject key."
+                )
+
+                site_options = ["(all sites)"] + [s["oid"] for s in sites_data]
+                filter_site = st.selectbox(
+                    "Filter by site (optional)",
+                    options=site_options,
+                    key="browser_subject_site_filter",
+                )
+                site_oid_filter = (
+                    None if filter_site == "(all sites)" else filter_site
+                )
+
+                search_col, _ = st.columns([1, 3])
+                with search_col:
+                    run_search = st.button(
+                        "Search Subjects", type="primary", use_container_width=True
+                    )
+
+                if run_search:
+                    with st.spinner("Fetching subjects from RWS…"):
+                        try:
+                            subject_keys = diag_browser.get_subjects(
+                                selected_study_oid,
+                                site_oid=site_oid_filter,
+                            )
+                            st.session_state.browser_subjects = subject_keys
+                            if not subject_keys:
+                                st.info("No subjects found matching that criteria.")
+                            else:
+                                st.success(f"{len(subject_keys)} subject(s) found.")
+                        except RWSError as rws_err:
+                            st.error(f"RWS error: {rws_err}")
+                        except Exception as exc:
+                            st.error(f"Failed to fetch subjects: {exc}")
+
+                if st.session_state.browser_subjects:
+                    subject_keys = st.session_state.browser_subjects
+
+                    # Optional client-side text filter
+                    search_filter = st.text_input(
+                        "Filter results",
+                        placeholder="Type to narrow the list…",
+                        key="browser_subject_text_filter",
+                    )
+                    filtered_keys = (
+                        [k for k in subject_keys if search_filter.lower() in k.lower()]
+                        if search_filter
+                        else subject_keys
+                    )
+
+                    st.caption(
+                        f"Showing {len(filtered_keys)} of {len(subject_keys)} subject(s)."
+                    )
+
+                    # Determine which site OID to pair with a selected subject.
+                    # If the user filtered to a specific site, use that; otherwise
+                    # use the first site in the list as a sensible default.
+                    default_site_for_builder = (
+                        site_oid_filter
+                        if site_oid_filter
+                        else (sites_data[0]["oid"] if sites_data else "")
+                    )
+
+                    for key in filtered_keys:
+                        col_key, col_btn = st.columns([5, 1])
+                        col_key.code(key, language=None)
+                        if col_btn.button(
+                            "Use",
+                            key=f"use_subject_{key}",
+                            help=f"Add {key!r} to the Builder",
+                        ):
+                            # Check if key already exists in Builder to avoid duplicates
+                            existing_keys = [
+                                s["key"] for s in st.session_state.subjects
+                            ]
+                            if key in existing_keys:
+                                st.warning(
+                                    f"Subject `{key}` is already in the Builder."
+                                )
+                            else:
+                                st.session_state.subjects.append({
+                                    "key": key,
+                                    "site_oid": default_site_for_builder,
+                                    "action": "(none)",
+                                    "events": [],
+                                })
+                                st.success(
+                                    f"✅ Added `{key}` to the Builder "
+                                    f"(site: `{default_site_for_builder}`). "
+                                    "Switch to the 🏗️ Builder tab to continue."
+                                )
